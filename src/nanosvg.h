@@ -161,6 +161,7 @@ typedef struct NSVGshape
 	char text[256];
 	char fontName[256];
 	float fontSize;
+	float textAngle;
 	char textAnchor;
 	NSVGpath* paths;			// Linked list of paths in the image.
 	struct NSVGshape* next;		// Pointer to next shape, or NULL if last element.
@@ -450,6 +451,7 @@ typedef struct NSVGattrib
 	float miterLimit;
 	char fillRule;
 	float fontSize;
+	float textAngle;
 	char text[256];
 	char fontName[256];
 	char textAnchor;
@@ -674,6 +676,7 @@ static NSVGparser* nsvg__createParser()
 	p->attr[0].hasFill = 1;
 	p->attr[0].visible = 1;
 	p->attr[0].fontSize = 0;
+	p->attr[0].textAngle = 0.0f;
 	p->attr[0].fontName[0] = '\0';
 	p->attr[0].textAnchor = NSVG_TEXTANCHOR_START;
 
@@ -1006,9 +1009,10 @@ static void nsvg__addShape(NSVGparser* p)
 	shape->miterLimit = attr->miterLimit;
 	shape->fillRule = attr->fillRule;
 	shape->opacity = attr->opacity;
-	shape->fontSize = attr->fontSize;
+	shape->fontSize = attr->fontSize * scale;
 	strcpy(shape->fontName, attr->fontName);
 	shape->textAnchor = attr->textAnchor;
+	shape->textAngle = attr->textAngle;
 
 	shape->paths = p->plist;
 	p->plist = NULL;
@@ -1130,6 +1134,45 @@ error:
 		free(path);
 	}
 }
+
+static float nsvg__computeAngle(float dx, float dy)
+{
+	float angle;
+	if ( fabs( dx )  < .0001f )	// vertical
+    {
+		if ( dy > 0.0f )
+		{
+		  angle = NSVG_PI/2.0f;
+		}
+		else
+		{
+		  angle = 3*NSVG_PI/2.0f;
+		}
+  	}
+	else if ( fabs( dy )  < .0001f )	// horizontal
+    {
+		if ( dx > 0.0f )
+		{
+		  angle = 0.0f;
+		}
+		else
+		{
+		  angle = NSVG_PI;
+		}
+    }
+    else
+    {
+		angle = atan2f( dy, dx );
+    }
+
+    if ( angle < 0.0f )
+    {
+		angle += 2*NSVG_PI;
+    }
+
+    return -angle*180/NSVG_PI;
+}
+
 static void nsvg__addTextPath(NSVGparser* p)
 {
 	NSVGattrib* attr = nsvg__getAttr(p);
@@ -1142,15 +1185,15 @@ static void nsvg__addTextPath(NSVGparser* p)
 	if (path == NULL) goto error;
 	memset(path, 0, sizeof(NSVGpath));
 
-	path->pts = (float*)malloc(p->npts*2*sizeof(float));
+	path->pts = (float*)malloc(2*sizeof(float));
 	if (path->pts == NULL) goto error;
 	path->npts = p->npts;
 
 	// Transform path.
-	for (i = 0; i < p->npts; ++i)
-	{
-		nsvg__xformPoint(&path->pts[i*2], &path->pts[i*2+1], p->pts[i*2], p->pts[i*2+1], attr->xform);
-	}
+	nsvg__xformPoint(&path->pts[0], &path->pts[1], p->pts[0], p->pts[1], attr->xform);
+	float points[2];
+	nsvg__xformPoint(&points[0], &points[1], p->pts[0]+1, p->pts[1], attr->xform);
+	attr->textAngle = nsvg__computeAngle(points[0]-path->pts[0], points[1]-path->pts[1]);
 
 	// Find bounds
 	for (i = 0; i < path->npts-1; i += 3)
@@ -1761,6 +1804,17 @@ static char nsvg__parseLineJoin(const char* str)
 	return NSVG_JOIN_MITER;
 }
 
+static char nsvg__parseTextAnchor(const char* str)
+{
+	if (strcmp(str, "start") == 0)
+		return NSVG_TEXTANCHOR_START;
+	else if (strcmp(str, "middle") == 0)
+		return NSVG_TEXTANCHOR_MIDDLE;
+	else if (strcmp(str, "end") == 0)
+		return NSVG_TEXTANCHOR_END;
+	return NSVG_TEXTANCHOR_START;
+}
+
 static char nsvg__parseFillRule(const char* str)
 {
 	if (strcmp(str, "nonzero") == 0)
@@ -1873,7 +1927,7 @@ static int nsvg__parseAttr(NSVGparser* p, const char* name, const char* value)
 	} else if (strcmp(name, "font-family") == 0) {
 		strcpy(attr->fontName, value);
 	} else if (strcmp(name, "text-anchor") == 0) {
-		strcpy(attr->fontName, value);
+		attr->textAnchor = nsvg__parseTextAnchor(value);
 	} else if (strcmp(name, "transform") == 0) {
 		nsvg__parseTransform(xform, value);
 		nsvg__xformPremultiply(attr->xform, xform);
