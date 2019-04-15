@@ -2935,6 +2935,9 @@ static void nsvg__startElement(void* ud, const char* el, const char** attr)
 		p->textFlag = 1;
 		nsvg__pushAttr(p);
 		nsvg__parseText(p, attr);
+	} else if (strcmp(el, "tspan") == 0)  {
+		nsvg__pushAttr(p);
+		nsvg__parseText(p, attr);
 		nsvg__popAttr(p);
 	} else  if (strcmp(el, "linearGradient") == 0) {
 		nsvg__parseGradient(p, attr, NSVG_PAINT_LINEAR_GRADIENT);
@@ -2965,6 +2968,7 @@ static void nsvg__endElement(void* ud, const char* el)
 		p->styleFlag = 0;
 	} else if (strcmp(el, "text") == 0) {
 		p->textFlag = 0;
+		nsvg__popAttr(p);
 	}
 }
 
