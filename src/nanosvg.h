@@ -2003,12 +2003,17 @@ static int nsvg__parseNameValue(NSVGparser* p, const char* start, const char* en
 	if (n) memcpy(name, start, n);
 	name[n] = 0;
 
-	while (val < end && (*val == ':' || nsvg__isspace(*val))) ++val;
+	while (val < end && (*val == ':' || nsvg__isspace(*val) || *val == '\'')) ++val;
 
 	n = (int)(end - val);
 	if (n > 511) n = 511;
 	if (n) memcpy(value, val, n);
 	value[n] = 0;
+
+	if(value[strlen(value)-1] == '\'')
+	{
+		value[strlen(value)-1] = '\0';
+	}
 
 	return nsvg__parseAttr(p, name, value);
 }
