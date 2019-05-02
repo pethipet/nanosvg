@@ -145,6 +145,7 @@ typedef struct NSVGpath
 typedef struct NSVGshape
 {
 	char id[64];				// Optional 'id' attr of the shape or its group
+	char lsyid[64];				// Optional 'lsy:id' attr of the shape or its group
 	NSVGpaint fill;				// Fill paint
 	NSVGpaint stroke;			// Stroke paint
 	float opacity;				// Opacity of the shape.
@@ -434,6 +435,7 @@ typedef struct NSVGgradientData
 typedef struct NSVGattrib
 {
 	char id[64];
+	char lsyid[64];
 	float xform[6];
 	unsigned int fillColor;
 	unsigned int strokeColor;
@@ -662,6 +664,7 @@ static NSVGparser* nsvg__createParser()
 	// Init style
 	nsvg__xformIdentity(p->attr[0].xform);
 	memset(p->attr[0].id, 0, sizeof p->attr[0].id);
+	memset(p->attr[0].lsyid, 0, sizeof p->attr[0].lsyid);
 	p->attr[0].fillColor = NSVG_RGB(0,0,0);
 	p->attr[0].strokeColor = NSVG_RGB(0,0,0);
 	p->attr[0].opacity = 1;
@@ -998,6 +1001,7 @@ static void nsvg__addShape(NSVGparser* p)
 	memset(shape, 0, sizeof(NSVGshape));
 
 	memcpy(shape->id, attr->id, sizeof shape->id);
+	memcpy(shape->lsyid, attr->lsyid, sizeof shape->lsyid);
 	scale = nsvg__getAverageScale(attr->xform);
 	shape->strokeWidth = attr->strokeWidth * scale;
 	shape->strokeDashOffset = attr->strokeDashOffset * scale;
@@ -1940,6 +1944,9 @@ static int nsvg__parseAttr(NSVGparser* p, const char* name, const char* value)
 	} else if (strcmp(name, "id") == 0) {
 		strncpy(attr->id, value, 63);
 		attr->id[63] = '\0';
+	} else if (strcmp(name, "lsy:lid") == 0) {
+		strncpy(attr->lsyid, value, 63);
+		attr->lsyid[63] = '\0';
 	}
 	else if (strcmp(name, "class") == 0)
 	{
