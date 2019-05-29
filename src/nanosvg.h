@@ -165,6 +165,8 @@ typedef struct NSVGshape
 	float textAngle;
 	char textAnchor;
 	NSVGpath* paths;			// Linked list of paths in the image.
+    struct NSVGshape* tspans;
+    struct NSVGshape* tspansTail;
 	struct NSVGshape* next;		// Pointer to next shape, or NULL if last element.
 } NSVGshape;
 
@@ -491,6 +493,7 @@ typedef struct NSVGparser
 	char defsFlag;
 	char styleFlag;
 	char textFlag;
+	char textSpanFlag;
 } NSVGparser;
 
 static void nsvg__xformIdentity(float* t)
@@ -1017,6 +1020,8 @@ static void nsvg__addShape(NSVGparser* p)
 	strcpy(shape->fontName, attr->fontName);
 	shape->textAnchor = attr->textAnchor;
 	shape->textAngle = attr->textAngle;
+	shape->tspans = NULL;
+	shape->tspansTail = NULL;
 
 	shape->paths = p->plist;
 	p->plist = NULL;
@@ -1072,10 +1077,28 @@ static void nsvg__addShape(NSVGparser* p)
 
 	// Add to tail
 	if (p->image->shapes == NULL)
-		p->image->shapes = shape;
+    {
+      p->image->shapes = shape;
+      p->shapesTail = shape;
+    }
+	else if(p->textSpanFlag == 1)
+	{
+	  if (p->shapesTail->tspans == NULL)
+      {
+        p->shapesTail->tspans = shape;
+        p->shapesTail->tspansTail = shape;
+      }
+	  else
+      {
+	    p->shapesTail->tspansTail->next = shape;
+        p->shapesTail->tspansTail = shape;
+	  }
+	}
 	else
-		p->shapesTail->next = shape;
-	p->shapesTail = shape;
+    {
+	  p->shapesTail->next = shape;
+	  p->shapesTail = shape;
+	}
 
 	return;
 
@@ -2943,6 +2966,7 @@ static void nsvg__startElement(void* ud, const char* el, const char** attr)
 		nsvg__pushAttr(p);
 		nsvg__parseText(p, attr);
 	} else if (strcmp(el, "tspan") == 0)  {
+	    p->textSpanFlag = 1;
 		nsvg__pushAttr(p);
 		nsvg__parseText(p, attr);
 		nsvg__popAttr(p);
@@ -2975,6 +2999,7 @@ static void nsvg__endElement(void* ud, const char* el)
 		p->styleFlag = 0;
 	} else if (strcmp(el, "text") == 0) {
 		p->textFlag = 0;
+		p->textSpanFlag = 0;
 		nsvg__popAttr(p);
 	}
 }
@@ -3000,7 +3025,14 @@ static void nsvg__content(void* ud, const char* s)
 	NSVGparser* p = (NSVGparser*)ud;
 	if(p->textFlag)
 	{
+	  if(p->shapesTail->tspans == NULL)
+      {
 		strcpy(p->shapesTail->text, s);
+      }
+	  else
+      {
+	    strcpy(p->shapesTail->tspansTail->text, s);
+      }
 	}
 	else if (p->styleFlag) {
 
@@ -3183,6 +3215,29 @@ static void nsvg__scaleToViewbox(NSVGparser* p, const char* units)
 			}
 		}
 
+		NSVGshape* textshape;
+		for (textshape = shape->tspans; textshape != NULL; textshape = textshape->next)
+		{
+          textshape->bounds[0] = (textshape->bounds[0] + tx) * sx;
+          textshape->bounds[1] = (textshape->bounds[1] + ty) * sy;
+          textshape->bounds[2] = (textshape->bounds[2] + tx) * sx;
+          textshape->bounds[3] = (textshape->bounds[3] + ty) * sy;
+
+          for (path = textshape->paths; path != NULL; path = path->next)
+          {
+            path->bounds[0] = (path->bounds[0] + tx) * sx;
+            path->bounds[1] = (path->bounds[1] + ty) * sy;
+            path->bounds[2] = (path->bounds[2] + tx) * sx;
+            path->bounds[3] = (path->bounds[3] + ty) * sy;
+            for (i =0; i < path->npts; i++)
+            {
+                pt = &path->pts[i*2];
+                pt[0] = (pt[0] + tx) * sx;
+                pt[1] = (pt[1] + ty) * sy;
+            }
+          }
+        }
+
 		if (shape->fill.type == NSVG_PAINT_LINEAR_GRADIENT || shape->fill.type == NSVG_PAINT_RADIAL_GRADIENT) {
 			nsvg__scaleGradient(shape->fill.gradient, tx,ty, sx,sy);
 			memcpy(t, shape->fill.gradient->xform, sizeof(float)*6);
@@ -3284,17 +3339,33 @@ error:
     return NULL;
 }
 
+void nsvgDeleteShape(NSVGshape* shape)
+{
+  nsvg__deletePaths(shape->paths);
+  nsvg__deletePaint(&shape->fill);
+  nsvg__deletePaint(&shape->stroke);
+  free(shape);
+}
+
 void nsvgDelete(NSVGimage* image)
 {
 	NSVGshape *snext, *shape;
 	if (image == NULL) return;
 	shape = image->shapes;
-	while (shape != NULL) {
+	while (shape != NULL)
+	{
 		snext = shape->next;
-		nsvg__deletePaths(shape->paths);
-		nsvg__deletePaint(&shape->fill);
-		nsvg__deletePaint(&shape->stroke);
-		free(shape);
+		if(shape->tspans)
+        {
+		  NSVGshape* tspanNext = shape->tspans;
+       	  while (tspanNext != NULL)
+          {
+       	    NSVGshape* temp = tspanNext;
+       	    tspanNext = tspanNext->next;
+       	    nsvgDeleteShape(temp);
+          }
+        }
+		nsvgDeleteShape(shape);
 		shape = snext;
 	}
 	free(image);
