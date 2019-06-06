@@ -2705,6 +2705,7 @@ static void nsvg__parseTextAngle(NSVGparser* p, float x, float y)
 
 static void nsvg__parseText(NSVGparser* p, const char** attr)
 {
+    bool coordinateFound = false;
 	float x = 0.0f;
 	float y = 0.0f;
 	int i;
@@ -2713,13 +2714,21 @@ static void nsvg__parseText(NSVGparser* p, const char** attr)
 	{
 		if (!nsvg__parseAttr(p, attr[i], attr[i + 1]))
 		{
-			if (strcmp(attr[i], "x") == 0) x = nsvg__parseCoordinate(p, attr[i+1], nsvg__actualOrigX(p), nsvg__actualWidth(p));
-			if (strcmp(attr[i], "y") == 0) y = nsvg__parseCoordinate(p, attr[i+1], nsvg__actualOrigY(p), nsvg__actualHeight(p));
+			if (strcmp(attr[i], "x") == 0)
+            {
+                x = nsvg__parseCoordinate(p, attr[i+1], nsvg__actualOrigX(p), nsvg__actualWidth(p));
+                coordinateFound = true;
+            }
+			else if (strcmp(attr[i], "y") == 0)
+            {
+                y = nsvg__parseCoordinate(p, attr[i+1], nsvg__actualOrigY(p), nsvg__actualHeight(p));
+                coordinateFound = true;
+            }
 		}
 	}
 
 	nsvg__resetPath(p);
-	if(p->defsFlag == 0)
+	if(coordinateFound || p->textSpanFlag == 0)
     {
       nsvg__addPoint(p, x, y);
       nsvg__addTextPath(p);
@@ -2771,42 +2780,53 @@ static void nsvg__parseUse(NSVGparser* p, const char** attr)
 
 	if(strlen(attribData->nsvgAttrib.text)>0 || attribData->tspans)
     {
-	    if(attribData->nsvgAttrib.fontSize > 0)
-        {
-          nsvg__pushAttr(p);
-          memcpy(&p->attr[p->attrHead], &attribData->nsvgAttrib, sizeof(NSVGattrib));
+	    NSVGattribData* nextAttribData = attribData->next;
+	    attribData->next = attribData->tspans;
 
-          p->textFlag = 1;
-          nsvg__resetPath(p);
-          nsvg__addPoint(p, x, y);
-          nsvg__parseTextAngle(p, x, y);
-          NSVGattrib* attrib = nsvg__getAttr(p);
-          nsvg__xformIdentity(attrib->xform);
-          nsvg__addTextPath(p);
-          nsvg__addShape(p);
-          p->textFlag = 0;
-          nsvg__popAttr(p);
-        }
-
-        NSVGattribData* attribDataIterator = attribData->tspans;
+	    bool tspanPathAdded = false;
+	    NSVGattribData* attribDataIterator = attribData;
         while(attribDataIterator)
         {
-          nsvg__pushAttr(p);
-          memcpy(&p->attr[p->attrHead], &attribDataIterator->nsvgAttrib, sizeof(NSVGattrib));
+          if(attribDataIterator->nsvgAttrib.fontSize > 0 && strlen(attribDataIterator->nsvgAttrib.text)>0)
+          {
+            nsvg__pushAttr(p);
+            NSVGattrib* attrib = nsvg__getAttr(p);
+            memcpy(attrib, &attribDataIterator->nsvgAttrib, sizeof(NSVGattrib));
+            nsvg__xformIdentity(attrib->xform);
 
-          p->textFlag = 1;
-          nsvg__resetPath(p);
-          nsvg__addPoint(p, x, y);
-          nsvg__parseTextAngle(p, x, y);
-          NSVGattrib* attrib = nsvg__getAttr(p);
-          nsvg__xformIdentity(attrib->xform);
-          nsvg__addTextPath(p);
-          nsvg__addShape(p);
-          p->textFlag = 0;
-          nsvg__popAttr(p);
+            p->textFlag = 1;
+            nsvg__resetPath(p);
+            if(attribDataIterator->path)
+            {
+                p->plist = nsvgDuplicatePath(attribDataIterator->path);
+
+                float xform[6];
+                nsvg__xformSetTranslation(xform, x, y);
+                nsvg__xformPoint(&p->plist->pts[0], &p->plist->pts[1], p->plist->pts[0], p->plist->pts[1], xform);
+                tspanPathAdded = true;
+            }
+            else
+            {
+                nsvg__addPoint(p, x, y);
+                nsvg__addTextPath(p);
+                if(tspanPathAdded)
+                {
+                  p->plist->npts = 0;
+                }
+                tspanPathAdded = true;
+
+            }
+            nsvg__addShape(p);
+            p->textFlag = 0;
+            nsvg__popAttr(p);
+            p->textSpanFlag = 1;
+          }
 
           attribDataIterator = attribDataIterator->next;
         }
+
+        p->textSpanFlag = 0;
+        attribData->next = nextAttribData;
     }
 	else if(attribData->path)
     {
@@ -3233,7 +3253,7 @@ static void nsvg__content(void* ud, const char* s)
 	else if (p->styleFlag) {
 
 		int state = 0;
-		const char* start;
+		const char* start = NULL;
 		while (*s)
 		{
 			if(*s == ']')
