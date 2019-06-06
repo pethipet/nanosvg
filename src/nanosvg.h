@@ -230,6 +230,10 @@ void nsvgDelete(NSVGimage* image);
 	#define NSVG_INLINE inline
 #endif
 
+static int nsvg__isSpecialCharacter(char c)
+{
+	return strchr("\t\n\v\f\r", c) != 0;
+}
 
 static int nsvg__isspace(char c)
 {
@@ -3227,26 +3231,34 @@ static void nsvg__content(void* ud, const char* s)
 	NSVGparser* p = (NSVGparser*)ud;
 	if(p->textFlag)
 	{
+      const char* str = s + strlen(s) - 1;
+	  char text[255];
+	  while (str > s && nsvg__isSpecialCharacter(*str)) str--;
+	  str++;
+      int n = (int)(str - s);
+      if (n) memcpy(text, s, n);
+      text[n] = 0;
+
 	  if(p->defsFlag)
       {
           if(p->attribDataTail->tspans == NULL)
           {
-            strcpy(p->attribDataTail->nsvgAttrib.text, s);
+            strcpy(p->attribDataTail->nsvgAttrib.text, text);
           }
           else
           {
-            strcpy(p->attribDataTail->tspansTail->nsvgAttrib.text, s);
+            strcpy(p->attribDataTail->tspansTail->nsvgAttrib.text, text);
           }
       }
 	  else
       {
         if(p->shapesTail->tspans == NULL)
         {
-          strcpy(p->shapesTail->text, s);
+          strcpy(p->shapesTail->text, text);
         }
         else
         {
-          strcpy(p->shapesTail->tspansTail->text, s);
+          strcpy(p->shapesTail->tspansTail->text, text);
         }
 	  }
 	}
