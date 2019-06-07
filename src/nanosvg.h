@@ -264,8 +264,13 @@ static void nsvg__parseContent(char* s,
 							   void (*contentCb)(void* ud, const char* s),
 							   void* ud)
 {
+    char* start = s;
 	// Trim start white spaces
-	while (*s && nsvg__isspace(*s)) s++;
+	while (*s && nsvg__isSpecialCharacter(*s)) s++;
+	if(start != s)
+	{
+	  while (*s && nsvg__isspace(*s)) s++;
+	}
 	if (strncmp(s+1, "![CDATA[", 8) == 0)
 	{
 		s+=9;
