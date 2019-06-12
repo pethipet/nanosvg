@@ -3719,21 +3719,25 @@ static void nsvg__scaleToViewbox(NSVGparser* p)
 		ty += nsvg__viewAlign(p->viewbox.viewHeight*sy, p->image->height, p->alignment.alignY) / sy;
 	}
 
+	float viewBoxToViewportScale = (sx+sy) / 2.0f;
 	// Transform
 	sx *= us;
 	sy *= us;
 	avgs = (sx+sy) / 2.0f;
-	for (shape = p->image->shapes; shape != NULL; shape = shape->imageNext) {
+	for (shape = p->image->shapes; shape != NULL; shape = shape->imageNext)
+	{
 		shape->bounds[0] = (shape->bounds[0] + tx) * sx;
 		shape->bounds[1] = (shape->bounds[1] + ty) * sy;
 		shape->bounds[2] = (shape->bounds[2] + tx) * sx;
 		shape->bounds[3] = (shape->bounds[3] + ty) * sy;
-		for (path = shape->paths; path != NULL; path = path->next) {
+		for (path = shape->paths; path != NULL; path = path->next)
+		{
 			path->bounds[0] = (path->bounds[0] + tx) * sx;
 			path->bounds[1] = (path->bounds[1] + ty) * sy;
 			path->bounds[2] = (path->bounds[2] + tx) * sx;
 			path->bounds[3] = (path->bounds[3] + ty) * sy;
-			for (i =0; i < path->npts; i++) {
+			for (i =0; i < path->npts; i++)
+			{
 				pt = &path->pts[i*2];
 				pt[0] = (pt[0] + tx) * sx + p->image->x * us;
 				pt[1] = (pt[1] + ty) * sy + p->image->y * us;
@@ -3743,6 +3747,7 @@ static void nsvg__scaleToViewbox(NSVGparser* p)
 		NSVGshape* textshape;
 		for (textshape = shape->tspans; textshape != NULL; textshape = textshape->next)
 		{
+		  textshape->fontSize *= viewBoxToViewportScale;
           textshape->bounds[0] = (textshape->bounds[0] + tx) * sx;
           textshape->bounds[1] = (textshape->bounds[1] + ty) * sy;
           textshape->bounds[2] = (textshape->bounds[2] + tx) * sx;
@@ -3774,6 +3779,7 @@ static void nsvg__scaleToViewbox(NSVGparser* p)
 			nsvg__xformInverse(shape->stroke.gradient->xform, t);
 		}
 
+        shape->fontSize *= viewBoxToViewportScale;
 		shape->strokeWidth *= avgs;
 		shape->strokeDashOffset *= avgs;
 		for (i = 0; i < shape->strokeDashCount; i++)
