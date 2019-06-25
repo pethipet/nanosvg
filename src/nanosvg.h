@@ -166,6 +166,7 @@ typedef struct NSVGshape
 	char fillRule;				// Fill rule, see NSVGfillRule.
 	unsigned char flags;		// Logical or of NSVG_FLAGS_* flags
 	float bounds[4];			// Tight bounding box of the shape [minx,miny,maxx,maxy].
+    float deltaTextLocation[2];
 	char text[256];
 	char fontName[256];
 	float fontSize;
@@ -493,6 +494,7 @@ typedef struct NSVGattrib
 	char strokeLineCap;
 	float miterLimit;
 	char fillRule;
+	float textLocation[2];
 	float fontSize;
 	float textAngle;
 	char text[256];
@@ -736,6 +738,7 @@ static NSVGparser* nsvg__createParser()
 	if (p == NULL) goto error;
 	memset(p, 0, sizeof(NSVGparser));
 	p->svgHead = -1;
+	p->defsFlag = NSVG_DEFFLAGS_NONE;
 
 	p->image = &p->svgImages[0];
 
@@ -1488,6 +1491,9 @@ static void nsvg__scaleShapeToViewbox(NSVGparser* p, NSVGimage* image, NSVGshape
     shape->bounds[1] = (shape->bounds[1] + ty) * sy;
     shape->bounds[2] = (shape->bounds[2] + tx) * sx;
     shape->bounds[3] = (shape->bounds[3] + ty) * sy;
+    shape->deltaTextLocation[0] *= us;
+    shape->deltaTextLocation[1] *= us;
+
     for (path = shape->paths; path != NULL; path = path->next)
     {
         path->bounds[0] = (path->bounds[0] + tx) * sx;
@@ -1510,6 +1516,8 @@ static void nsvg__scaleShapeToViewbox(NSVGparser* p, NSVGimage* image, NSVGshape
       textshape->bounds[1] = (textshape->bounds[1] + ty) * sy;
       textshape->bounds[2] = (textshape->bounds[2] + tx) * sx;
       textshape->bounds[3] = (textshape->bounds[3] + ty) * sy;
+      textshape->deltaTextLocation[0] *= us;
+      textshape->deltaTextLocation[1] *= us;
 
       for (path = textshape->paths; path != NULL; path = path->next)
       {
@@ -1604,7 +1612,7 @@ static NSVGshape* nsvg__addShape(NSVGparser* p)
 	NSVGpath* path;
 	int i;
 
-	if (p->plist == NULL)
+	if (p->plist == NULL && p->textSpanFlag == 0)
 		return shape;
 
 	shape = (NSVGshape*)malloc(sizeof(NSVGshape));
@@ -1637,15 +1645,19 @@ static NSVGshape* nsvg__addShape(NSVGparser* p)
 	p->plist = NULL;
 
 	// Calculate shape bounds
-	shape->bounds[0] = shape->paths->bounds[0];
-	shape->bounds[1] = shape->paths->bounds[1];
-	shape->bounds[2] = shape->paths->bounds[2];
-	shape->bounds[3] = shape->paths->bounds[3];
-	for (path = shape->paths->next; path != NULL; path = path->next) {
-		shape->bounds[0] = nsvg__minf(shape->bounds[0], path->bounds[0]);
-		shape->bounds[1] = nsvg__minf(shape->bounds[1], path->bounds[1]);
-		shape->bounds[2] = nsvg__maxf(shape->bounds[2], path->bounds[2]);
-		shape->bounds[3] = nsvg__maxf(shape->bounds[3], path->bounds[3]);
+	if(shape->paths)
+    {
+      shape->bounds[0] = shape->paths->bounds[0];
+      shape->bounds[1] = shape->paths->bounds[1];
+      shape->bounds[2] = shape->paths->bounds[2];
+      shape->bounds[3] = shape->paths->bounds[3];
+      for (path = shape->paths->next; path != NULL; path = path->next)
+      {
+          shape->bounds[0] = nsvg__minf(shape->bounds[0], path->bounds[0]);
+          shape->bounds[1] = nsvg__minf(shape->bounds[1], path->bounds[1]);
+          shape->bounds[2] = nsvg__maxf(shape->bounds[2], path->bounds[2]);
+          shape->bounds[3] = nsvg__maxf(shape->bounds[3], path->bounds[3]);
+      }
 	}
 
 	// Set fill
@@ -3280,9 +3292,12 @@ static void nsvg__parseTextAngle(NSVGparser* p, float x, float y)
 
 static void nsvg__parseText(NSVGparser* p, const char** attr)
 {
+    NSVGattrib* attrib = nsvg__getAttr(p);
     bool coordinateFound = false;
-	float x = 0.0f;
-	float y = 0.0f;
+	float x = attrib->textLocation[0];
+	float y = attrib->textLocation[1];
+	float dx = 0.0f;
+	float dy = 0.0f;
 	int i;
 
 	for (i = 0; attr[i]; i += 2)
@@ -3294,22 +3309,50 @@ static void nsvg__parseText(NSVGparser* p, const char** attr)
                 x = nsvg__parseCoordinate(p, attr[i+1], nsvg__actualOrigX(p), nsvg__actualWidth(p));
                 coordinateFound = true;
             }
+			else if (strcmp(attr[i], "dx") == 0)
+            {
+                dx = nsvg__parseCoordinate(p, attr[i+1], nsvg__actualOrigX(p), nsvg__actualWidth(p));
+                coordinateFound = true;
+            }
 			else if (strcmp(attr[i], "y") == 0)
             {
                 y = nsvg__parseCoordinate(p, attr[i+1], nsvg__actualOrigY(p), nsvg__actualHeight(p));
                 coordinateFound = true;
             }
+			else if (strcmp(attr[i], "dy") == 0)
+            {
+                dy += nsvg__parseCoordinate(p, attr[i+1], nsvg__actualOrigX(p), nsvg__actualWidth(p));
+                coordinateFound = true;
+            }
+			else if (strcmp(attr[i], "baseline-shift") == 0)
+            {
+                dy -= nsvg__parseCoordinate(p, attr[i+1], nsvg__actualOrigX(p), nsvg__actualWidth(p));
+                coordinateFound = true;
+            }
 		}
 	}
 
+	if(p->textSpanFlag == 0)
+    {
+      attrib->textLocation[0] = x;
+      attrib->textLocation[1] = y;
+    }
+
 	nsvg__resetPath(p);
-	if(coordinateFound || p->textSpanFlag == 0)
+	if(coordinateFound || p->textSpanFlag == 0 ||
+	    (p->defsFlag == NSVG_DEFFLAGS_NONE && strlen(p->shapesTail->text) == 0 && !p->shapesTail->tspans))
     {
       nsvg__addPoint(p, x, y);
       nsvg__addTextPath(p);
       nsvg__parseTextAngle(p, x, y);
     }
-    nsvg__addShape(p);
+
+    NSVGshape* shape = nsvg__addShape(p);
+	if(shape)
+    {
+      shape->deltaTextLocation[0] = dx;
+      shape->deltaTextLocation[1] = dy;
+	}
 }
 
 static char *nsvg__strndup(const char *s, size_t n)
@@ -3573,6 +3616,9 @@ static void nsvg__scaleToViewbox(NSVGparser* p)
 			}
 		}
 
+		shape->deltaTextLocation[0] *= us;
+		shape->deltaTextLocation[1] *= us;
+
 		NSVGshape* textshape;
 		for (textshape = shape->tspans; textshape != NULL; textshape = textshape->next)
 		{
@@ -3581,6 +3627,8 @@ static void nsvg__scaleToViewbox(NSVGparser* p)
           textshape->bounds[1] = (textshape->bounds[1] + ty) * sy;
           textshape->bounds[2] = (textshape->bounds[2] + tx) * sx;
           textshape->bounds[3] = (textshape->bounds[3] + ty) * sy;
+          textshape->deltaTextLocation[0] *= us;
+          textshape->deltaTextLocation[1] *= us;
 
           for (path = textshape->paths; path != NULL; path = path->next)
           {
