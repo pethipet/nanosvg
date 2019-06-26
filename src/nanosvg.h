@@ -166,6 +166,7 @@ typedef struct NSVGshape
 	char fillRule;				// Fill rule, see NSVGfillRule.
 	unsigned char flags;		// Logical or of NSVG_FLAGS_* flags
 	float bounds[4];			// Tight bounding box of the shape [minx,miny,maxx,maxy].
+    char preserveSpace;
     float deltaTextLocation[2];
 	char text[256];
 	char fontName[256];
@@ -511,7 +512,9 @@ typedef struct NSVGattrib
 	char strokeLineCap;
 	float miterLimit;
 	char fillRule;
+	char preserveSpace;
 	float textLocation[2];
+	float deltaTextLocation[2];
 	float fontSize;
 	float textAngle;
 	char text[256];
@@ -936,7 +939,10 @@ static void nsvg__pushAttr(NSVGparser* p)
 static void nsvg__popAttr(NSVGparser* p)
 {
 	if (p->attrHead > 0)
+    {
+	    memset(&p->attr[p->attrHead], 0, sizeof(NSVGattrib));
 		p->attrHead--;
+    }
 
 	NSVGattrib* attr = nsvg__getAttr(p);
 	if(strlen(attr->clipPathId) == 0)
@@ -1663,6 +1669,8 @@ static NSVGshape* nsvg__addShape(NSVGparser* p)
 	shape->fillRule = attr->fillRule;
 	shape->opacity = attr->opacity;
 	shape->fontSize = attr->fontSize * scale;
+	shape->preserveSpace = attr->preserveSpace;
+	memcpy(shape->deltaTextLocation, attr->deltaTextLocation, sizeof(float)*2);
 	strcpy(shape->fontName, attr->fontName);
 	strcpy(shape->text, attr->text);
 	shape->textAnchor = attr->textAnchor;
@@ -2636,6 +2644,13 @@ static int nsvg__parseAttr(NSVGparser* p, const char* name, const char* value)
           attr->id[63] = '\0';
 		}
 	}
+	else if (strcmp(name, "xml:space") == 0)
+	{
+	    if(strcmp(value, "preserve") == 0)
+        {
+            attr->preserveSpace = 1;
+		}
+	}
 	else if (strcmp(name, "lsy:lid") == 0)
 	{
 		strncpy(attr->lsyid, value, 63);
@@ -3378,6 +3393,9 @@ static void nsvg__parseText(NSVGparser* p, const char** attr)
 		}
 	}
 
+	attrib->deltaTextLocation[0] = dx;
+    attrib->deltaTextLocation[1] = dy;
+
 	if(p->textSpanFlag == 0)
     {
       attrib->textLocation[0] = x;
@@ -3393,12 +3411,7 @@ static void nsvg__parseText(NSVGparser* p, const char** attr)
       nsvg__parseTextAngle(p, x, y);
     }
 
-    NSVGshape* shape = nsvg__addShape(p);
-	if(shape)
-    {
-      shape->deltaTextLocation[0] = dx;
-      shape->deltaTextLocation[1] = dy;
-	}
+    nsvg__addShape(p);
 }
 
 static char *nsvg__strndup(const char *s, size_t n)
@@ -3479,6 +3492,7 @@ static void nsvg__parseSymbol(NSVGparser* p, const char** attr)
 {
     NSVGattribData* attribData = (NSVGattribData*)malloc(sizeof(NSVGattribData));
     memset(attribData, 0, sizeof(NSVGattribData));
+    memset(&attribData->symbol, 0, sizeof(NSVGSymbol));
     attribData->symbol.alignment.alignType = NSVG_ALIGN_MEET;
     attribData->symbol.alignment.alignX = NSVG_ALIGN_MID;
     attribData->symbol.alignment.alignY = NSVG_ALIGN_MID;
@@ -4429,6 +4443,7 @@ static void nsvg__startElement(void* ud, const char* el, const char** attr)
         {
           p->defsFlag |= NSVG_DEFFLAGS_SVG;
 		}
+		nsvg__pushAttr(p);
 		nsvg__parseSVG(p, attr);
 	} else if (strcmp(el, "style") == 0) {
 		p->styleFlag = 1;
@@ -4577,9 +4592,8 @@ static void nsvg__endElement(void* ud, const char* el)
         else
         {
             NSVGattribData* attribData = (NSVGattribData*)malloc(sizeof(NSVGattribData));
-            attribData->next = NULL;
-            attribData->path = NULL;
-            attribData->tspans = NULL;
+            memset(attribData, 0, sizeof(NSVGattribData));
+            memset(&attribData->symbol, 0, sizeof(NSVGSymbol));
             memcpy(&attribData->nsvgAttrib, &p->attr[p->attrHead], sizeof(NSVGattrib));
             memcpy(&attribData->image, p->image, sizeof(NSVGimage));
             memcpy(&attribData->image.viewbox, &p->viewbox, sizeof(NSVGViewbox));
@@ -4597,6 +4611,7 @@ static void nsvg__endElement(void* ud, const char* el)
             nsvg__popImage(p);
         }
         p->defsFlag &= ~NSVG_DEFFLAGS_SVG;
+        nsvg__popAttr(p);
 	}
 	else if (strcmp(el, "g") == 0) {
 		nsvg__popAttr(p);
