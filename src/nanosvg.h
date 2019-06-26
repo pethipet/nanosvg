@@ -3373,7 +3373,6 @@ static void nsvg__parseText(NSVGparser* p, const char** attr)
 			else if (strcmp(attr[i], "dx") == 0)
             {
                 dx = nsvg__parseCoordinate(p, attr[i+1], nsvg__actualOrigX(p), nsvg__actualWidth(p));
-                coordinateFound = true;
             }
 			else if (strcmp(attr[i], "y") == 0)
             {
@@ -3383,12 +3382,10 @@ static void nsvg__parseText(NSVGparser* p, const char** attr)
 			else if (strcmp(attr[i], "dy") == 0)
             {
                 dy += nsvg__parseCoordinate(p, attr[i+1], nsvg__actualOrigX(p), nsvg__actualWidth(p));
-                coordinateFound = true;
             }
 			else if (strcmp(attr[i], "baseline-shift") == 0)
             {
                 dy -= nsvg__parseCoordinate(p, attr[i+1], nsvg__actualOrigX(p), nsvg__actualWidth(p));
-                coordinateFound = true;
             }
 		}
 	}
