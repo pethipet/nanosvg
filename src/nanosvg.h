@@ -441,6 +441,7 @@ int nsvg__parseXML(char* input,
 #define NSVG_MAX_ATTR 128
 #define NSVG_MAX_SVG 128
 #define NSVG_MAX_GROUP 128
+#define NSVG_MAX_CLIPPATHS 128
 
 enum NSVGgradientUnits {
 	NSVG_USER_SPACE = 0,
@@ -526,7 +527,7 @@ typedef struct NSVGattrib
 	char hasFill;
 	char hasStroke;
 	char visible;
-	char clipPathId[64];
+	NSVGshape* clippingShape;
 } NSVGattrib;
 
 typedef struct NSVGattribData
@@ -573,6 +574,8 @@ typedef struct NSVGparser
 	int svgHead;
 	NSVGgroup groups[NSVG_MAX_GROUP];
 	int groupHead;
+	NSVGshape *clipPaths[NSVG_MAX_CLIPPATHS];
+	int clipPathHead;
 	NSVGstyles* styles;
 	NSVGattribData* attribData;
 	NSVGattribData* attribDataTail;
@@ -942,12 +945,6 @@ static void nsvg__popAttr(NSVGparser* p)
     {
 	    memset(&p->attr[p->attrHead], 0, sizeof(NSVGattrib));
 		p->attrHead--;
-    }
-
-	NSVGattrib* attr = nsvg__getAttr(p);
-	if(strlen(attr->clipPathId) == 0)
-    {
-        p->currentClippingPath = NULL;
     }
 }
 
@@ -1753,8 +1750,6 @@ static NSVGshape* nsvg__addShape(NSVGparser* p)
 
 	if(p->clipPathFlag)
     {
-	  p->currentClippingPath = shape;
-
       if(p->image->clipPathList == NULL)
       {
           p->image->clipPathList = shape;
@@ -1783,7 +1778,7 @@ static NSVGshape* nsvg__addShape(NSVGparser* p)
       return shape;
     }
 
-    shape->clippingPath = p->currentClippingPath;
+    shape->clippingPath = attr->clippingShape;
 
 	// Add to tail
 	if(p->useFlag == 0)
@@ -2701,8 +2696,7 @@ static int nsvg__parseAttr(NSVGparser* p, const char* name, const char* value)
 		    nsvg__parseUrl(clipid, value);
 		    if(strcmp(clipid, clipShape->id) == 0)
             {
-		      p->currentClippingPath = clipShape;
-              strcpy(attr->clipPathId, clipid);
+              attr->clippingShape = clipShape;
               break;
             }
           }
@@ -4264,6 +4258,43 @@ static void nsvg__parseSVG(NSVGparser* p, const char** attr)
 			}
 		}
 	}
+
+	if((p->defsFlag & NSVG_DEFFLAGS_SVG) == 0)
+    {
+      nsvg__resetPath(p);
+
+      nsvg__moveTo(p, p->image->x, p->image->y);
+      nsvg__lineTo(p, p->image->x, p->image->y+p->image->height);
+      nsvg__lineTo(p, p->image->x+p->image->width, p->image->y+p->image->height);
+      nsvg__lineTo(p, p->image->x+p->image->width, p->image->y);
+      nsvg__addPath(p, 1);
+
+      NSVGshape* shape = (NSVGshape*)malloc(sizeof(NSVGshape));
+      memset(shape, 0, sizeof(NSVGshape));
+
+      shape->paths = p->plist;
+      p->plist = NULL;
+
+      float us = 1.0f / nsvg__convertToPixels(p, nsvg__coord(1.0f, nsvg__parseUnits(p->units)), 0.0f, 1.0f);
+      shape->bounds[0] = shape->paths->bounds[0]*us;
+      shape->bounds[1] = shape->paths->bounds[1]*us;
+      shape->bounds[2] = shape->paths->bounds[2]*us;
+      shape->bounds[3] = shape->paths->bounds[3]*us;
+
+      if(p->clipPathList == NULL)
+      {
+         p->clipPathList = shape;
+         p->clipPathTail = shape;
+      }
+      else
+      {
+         p->clipPathTail->next = shape;
+         p->clipPathTail = shape;
+      }
+
+      NSVGattrib* attrib = nsvg__getAttr(p);
+      attrib->clippingShape = shape;
+    }
 }
 
 static void nsvg__parseGradient(NSVGparser* p, const char** attr, char type)
