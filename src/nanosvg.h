@@ -181,6 +181,7 @@ typedef struct NSVGshape
 	struct NSVGshape* next;		// Pointer to next shape, or NULL if last element.
     struct NSVGshape* imageNext;		// Pointer to next shape in image shape list, or NULL if last element.
     struct NSVGshape* groupNext;		// Pointer to next shape in group shape list, or NULL if last element.
+    struct NSVGshape* clipListNext;		// Pointer to next shape in clip shape list, or NULL if last element.
 } NSVGshape;
 
 
@@ -518,6 +519,7 @@ typedef struct NSVGattrib
 	float deltaTextLocation[2];
 	float fontSize;
 	float textAngle;
+	float glyphRotation;
 	char text[256];
 	char fontName[256];
 	char textAnchor;
@@ -539,7 +541,6 @@ typedef struct NSVGattribData
   NSVGattribData* tspans;
   NSVGattribData* tspansTail;
   struct NSVGattribData* next;
-  struct NSVGattribData* groupNext;
 } NSVGattribData;
 
 typedef struct NSVGgroup
@@ -553,11 +554,11 @@ typedef struct NSVGgroup
   NSVGshape* clipPathList;
   NSVGshape* clipPathTail;
   struct NSVGgroup* defListnext;
-  struct NSVGgroup* subgroup;
+  struct NSVGgroup* subgroups;
   struct NSVGgroup* previousGroup;
   /**list of groups at same level**/
-  struct NSVGgroup* nextGroup;
-  struct NSVGgroup* grouptail;
+  struct NSVGgroup* next;
+  struct NSVGgroup* subgroupsTail;
 } NSVGgroup;
 
 typedef struct NSVGstyles
@@ -798,6 +799,7 @@ static NSVGparser* nsvg__createParser()
 	p->attr[0].visible = 1;
 	p->attr[0].fontSize = 0;
 	p->attr[0].textAngle = 0.0f;
+	p->attr[0].glyphRotation = 0.0f;
 	p->attr[0].fontName[0] = '\0';
 	p->attr[0].textAnchor = NSVG_TEXTANCHOR_START;
 
@@ -1118,6 +1120,20 @@ static void nsvg__transformShape(NSVGshape* shape, float* xform)
     nsvg__shapeBounds(shape);
 }
 
+static void nsvg__addClipPathShape(NSVGgroup* group, NSVGshape* shape)
+{
+    if(group->clipPathList == NULL)
+    {
+       group->clipPathList = shape;
+       group->clipPathTail = shape;
+    }
+    else
+    {
+       group->clipPathTail->groupNext = shape;
+       group->clipPathTail = shape;
+    }
+}
+
 static void nsvg__popGroup(NSVGparser* p)
 {
     NSVGgroup* group = nsvg__getGroup(p);
@@ -1150,6 +1166,11 @@ static void nsvg__popGroup(NSVGparser* p)
 
     for (NSVGshape* shape = group->clipPathList; shape != NULL; shape = shape->groupNext)
 	{
+        if(p->groupHead > 0)
+        {
+          nsvg__addClipPathShape(previousGroup, shape);
+        }
+
         nsvg__transformShape(shape, xform);
     }
 }
@@ -1182,6 +1203,20 @@ static void nsvg__pushImage(NSVGparser* p)
     p->image->clipPathTail = NULL;
 }
 
+static void nsvg__addClipPathShape(NSVGparser* p, NSVGshape* shape)
+{
+    if(p->clipPathList == NULL)
+    {
+       p->clipPathList = shape;
+       p->clipPathTail = shape;
+    }
+    else
+    {
+       p->clipPathTail->clipListNext = shape;
+       p->clipPathTail = shape;
+    }
+}
+
 static void nsvg__popImage(NSVGparser* p)
 {
     p->viewbox = p->image->viewbox;
@@ -1191,17 +1226,6 @@ static void nsvg__popImage(NSVGparser* p)
 
     p->image->shapes = NULL;
     p->image->shapesTail = NULL;
-
-    if(p->clipPathList == NULL)
-    {
-       p->clipPathList = p->image->clipPathList;
-       p->clipPathTail = p->image->clipPathTail;
-    }
-    else if(p->image->clipPathList != NULL)
-    {
-       p->clipPathTail->next = p->image->clipPathList;
-       p->clipPathTail = p->image->clipPathTail;
-    }
 
 	p->image = nsvg__getImage(p);
 }
@@ -1547,9 +1571,61 @@ static void nsvg__scaleShapeToViewbox(NSVGparser* p, NSVGimage* image, NSVGshape
         shape->strokeDashArray[i] *= avgs;
 }
 
+static void nsvg__addDefGroup(NSVGparser* p)
+{
+    NSVGattrib* attrib = nsvg__getAttr(p);
+    NSVGgroup* group = (NSVGgroup*)malloc(sizeof(NSVGgroup));
+    memset(group, 0, sizeof(NSVGgroup));
+    memcpy(&group->nsvgAttrib, attrib, sizeof(NSVGattrib));
+    float us = 1.0f / nsvg__convertToPixels(p, nsvg__coord(1.0f, nsvg__parseUnits(p->units)), 0.0f, 1.0f);
+    group->nsvgAttrib.xform[4] *= us;
+    group->nsvgAttrib.xform[5] *= us;
+
+    if(p->currentDefGroup == NULL)
+    {
+      p->defsFlag |= NSVG_DEFFLAGS_GROUP;
+      p->currentDefGroup = group;
+      memcpy(&p->currentDefGroup->accumulateXform, &p->groups[p->groupHead].accumulateXform, sizeof(float)*6);
+      nsvg__xformPremultiply(p->currentDefGroup->accumulateXform, attrib->xform);
+      if(p->defsFlag & NSVG_DEFFLAGS_SVG)
+      {
+        p->currentDefGroup->clipPathList = attrib->clippingShape;
+      }
+
+      if (p->defGroup == NULL)
+      {
+        p->defGroup = p->currentDefGroup;
+        p->defGroupTail = p->currentDefGroup;
+      }
+      else
+      {
+        p->defGroupTail->defListnext = p->currentDefGroup;
+        p->defGroupTail = p->currentDefGroup;
+      }
+    }
+    else
+    {
+      memcpy(&group->accumulateXform, &p->currentDefGroup->accumulateXform, sizeof(float)*6);
+      nsvg__xformPremultiply(group->accumulateXform, attrib->xform);
+
+      if (p->currentDefGroup->subgroups == NULL)
+      {
+        p->currentDefGroup->subgroups = group;
+        p->currentDefGroup->subgroupsTail = group;
+      }
+      else
+      {
+        p->currentDefGroup->subgroupsTail->next = group;
+        p->currentDefGroup->subgroupsTail = group;
+      }
+      group->previousGroup = p->currentDefGroup;
+      p->currentDefGroup = group;
+    }
+}
+
 static NSVGshape* nsvg__addShape(NSVGparser* p)
 {
-  	if((p->defsFlag ^ NSVG_DEFFLAGS_ELEMENT) == 0 || p->currentDefGroup)
+  	if(!p->clipPathFlag && ((p->defsFlag ^ NSVG_DEFFLAGS_ELEMENT) == 0 || p->currentDefGroup))
 	{
       NSVGattribData* attribData = (NSVGattribData*)malloc(sizeof(NSVGattribData));
       memset(attribData, 0, sizeof(NSVGattribData));
@@ -1565,12 +1641,7 @@ static NSVGshape* nsvg__addShape(NSVGparser* p)
 
       if(p->currentDefGroup)
       {
-        if (p->currentDefGroup->attribData == NULL)
-        {
-          p->currentDefGroup->attribData = attribData;
-          p->currentDefGroup->attribDataTail = attribData;
-        }
-        else if(p->textSpanFlag == 1)
+        if(p->textSpanFlag == 1)
         {
           if (p->currentDefGroup->attribDataTail->tspans == NULL)
           {
@@ -1585,8 +1656,13 @@ static NSVGshape* nsvg__addShape(NSVGparser* p)
         }
         else
         {
-          p->currentDefGroup->attribDataTail->groupNext = attribData;
+          nsvg__addDefGroup(p);
+          p->currentDefGroup->attribData = attribData;
           p->currentDefGroup->attribDataTail = attribData;
+          if(p->textFlag == 0)
+          {
+            p->currentDefGroup = p->currentDefGroup->previousGroup;
+          }
         }
 
         return NULL;
@@ -1652,7 +1728,7 @@ static NSVGshape* nsvg__addShape(NSVGparser* p)
 	strcpy(shape->fontName, attr->fontName);
 	strcpy(shape->text, attr->text);
 	shape->textAnchor = attr->textAnchor;
-	shape->textAngle = attr->textAngle;
+	shape->textAngle = attr->textAngle - attr->glyphRotation;
 	shape->tspans = NULL;
 	shape->tspansTail = NULL;
 	shape->imageData = NULL;
@@ -1675,6 +1751,37 @@ static NSVGshape* nsvg__addShape(NSVGparser* p)
           shape->bounds[3] = nsvg__maxf(shape->bounds[3], path->bounds[3]);
       }
 	}
+
+	if(p->clipPathFlag)
+    {
+	  nsvg__addClipPathShape(p, shape);
+
+	  if(!p->currentDefGroup)
+      {
+        if(p->image->clipPathList == NULL)
+        {
+            p->image->clipPathList = shape;
+            p->image->clipPathTail = shape;
+        }
+        else
+        {
+            p->image->clipPathTail->next = shape;
+            p->image->clipPathTail = shape;
+        }
+
+        if(p->groupHead > 0)
+        {
+          nsvg__addClipPathShape(group, shape);
+        }
+      }
+	  else
+      {
+	    nsvg__scaleShapeToViewbox(p, p->image, shape);
+        nsvg__addClipPathShape(p->currentDefGroup, shape);
+      }
+
+      return shape;
+    }
 
 	// Set fill
 	if (attr->hasFill == 0) {
@@ -1724,36 +1831,6 @@ static NSVGshape* nsvg__addShape(NSVGparser* p)
       {
         p->attribDataTail->symbol.shapesTail->next = shape;
         p->attribDataTail->symbol.shapesTail = shape;
-      }
-
-      return shape;
-    }
-
-	if(p->clipPathFlag)
-    {
-      if(p->image->clipPathList == NULL)
-      {
-          p->image->clipPathList = shape;
-          p->image->clipPathTail = shape;
-      }
-      else
-      {
-          p->image->clipPathTail->next = shape;
-          p->image->clipPathTail = shape;
-      }
-
-      if(p->groupHead > 0)
-      {
-        if(group->clipPathList == NULL)
-        {
-            group->clipPathList = shape;
-            group->clipPathTail = shape;
-        }
-        else
-        {
-            group->clipPathTail->groupNext = shape;
-            group->clipPathTail = shape;
-        }
       }
 
       return shape;
@@ -2668,7 +2745,7 @@ static int nsvg__parseAttr(NSVGparser* p, const char* name, const char* value)
 	}
 	else if (strcmp(name, "clip-path") == 0)
     {
-	    NSVGshape* clipShape = p->image->clipPathList;
+	    NSVGshape* clipShape = p->clipPathList;
 		while(clipShape)
         {
 		  if (strncmp(value, "url(", 4) == 0)
@@ -2682,7 +2759,7 @@ static int nsvg__parseAttr(NSVGparser* p, const char* name, const char* value)
             }
           }
 
-		  clipShape = clipShape->next;
+		  clipShape = clipShape->clipListNext;
         }
 	}
 	else
@@ -3317,7 +3394,7 @@ static void nsvg__parseTextAngle(NSVGparser* p, float x, float y)
     if(p->groupHead > 0)
     {
         NSVGgroup* group = nsvg__getGroup(p);
-        nsvg__xformMultiply(xform, group->nsvgAttrib.xform);
+        nsvg__xformMultiply(xform, group->accumulateXform);
     }
     float points[2];
     nsvg__xformPoint(&points[0], &points[1], x, y, xform);
@@ -3334,6 +3411,7 @@ static void nsvg__parseText(NSVGparser* p, const char** attr)
 	float y = attrib->textLocation[1];
 	float dx = 0.0f;
 	float dy = 0.0f;
+	float angle = 0.0f;
 	int i;
 
 	for (i = 0; attr[i]; i += 2)
@@ -3362,11 +3440,16 @@ static void nsvg__parseText(NSVGparser* p, const char** attr)
             {
                 dy -= nsvg__parseCoordinate(p, attr[i+1], nsvg__actualOrigX(p), nsvg__actualWidth(p));
             }
+			else if (strcmp(attr[i], "rotate") == 0)
+            {
+				angle = nsvg__atof(attr[i+1]);
+            }
 		}
 	}
 
 	attrib->deltaTextLocation[0] = dx;
     attrib->deltaTextLocation[1] = dy;
+    attrib->glyphRotation = angle;
 
 	if(p->textSpanFlag == 0)
     {
@@ -3959,7 +4042,11 @@ static void nsvg__addShapeForAttribData(NSVGparser* p, NSVGattribData* attribDat
 
 static void nsvg__processGroup(NSVGparser* p, NSVGgroup* group)
 {
-    int currentGroupHead = p->groupHead;
+    if(!group)
+    {
+      return;
+    }
+
     NSVGgroup* groupIterator = group;
     while(groupIterator)
     {
@@ -3967,20 +4054,14 @@ static void nsvg__processGroup(NSVGparser* p, NSVGgroup* group)
       NSVGgroup* currentGroup = nsvg__getGroup(p);
       memcpy(currentGroup, groupIterator, sizeof(NSVGgroup));
 
-      NSVGattribData* attribData = groupIterator->attribData;
-      while(attribData)
+      nsvg__processGroup(p, groupIterator->subgroups);
+      if(groupIterator->attribData)
       {
-        nsvg__addShapeForAttribData(p, attribData, 0, 0);
-        attribData = attribData->groupNext;
+        nsvg__addShapeForAttribData(p, groupIterator->attribData, 0, 0);
       }
 
-      nsvg__processGroup(p, groupIterator->nextGroup);
-      groupIterator = groupIterator->subgroup;
-    }
-
-    while(p->groupHead > currentGroupHead)
-    {
       nsvg__popGroup(p);
+      groupIterator = groupIterator->next;
     }
 }
 
@@ -4136,10 +4217,6 @@ static void nsvg__parseUse(NSVGparser* p, const char** attr)
         for (NSVGshape* shape = group->clipPathList; shape != NULL; shape = shape->groupNext)
         {
             nsvg__transformShape(shape, xform);
-            shape->bounds[0] = nsvg__maxf(shape->bounds[0], p->clipPathList->bounds[0]);
-            shape->bounds[1] = nsvg__maxf(shape->bounds[1], p->clipPathList->bounds[1]);
-            shape->bounds[2] = nsvg__minf(shape->bounds[2], p->clipPathList->bounds[2]);
-            shape->bounds[3] = nsvg__minf(shape->bounds[3], p->clipPathList->bounds[3]);
         }
 
         currentGroup->shapes = NULL;
@@ -4328,31 +4405,13 @@ static void nsvg__parseSVG(NSVGparser* p, const char** attr)
     nsvg__xformSetScale(xform, us, us);
     nsvg__transformShape(shape, xform);
 
-    if(p->clipPathList == NULL)
-    {
-       p->clipPathList = shape;
-       p->clipPathTail = shape;
-    }
-    else
-    {
-       p->clipPathTail->next = shape;
-       p->clipPathTail = shape;
-    }
+    nsvg__addClipPathShape(p, shape);
 
     NSVGattrib* attrib = nsvg__getAttr(p);
     attrib->clippingShape = shape;
     if(p->currentDefGroup)
     {
-      if(p->currentDefGroup->clipPathList == NULL)
-      {
-         p->currentDefGroup->clipPathList = shape;
-         p->currentDefGroup->clipPathTail = shape;
-      }
-      else
-      {
-         p->currentDefGroup->clipPathTail->next = shape;
-         p->currentDefGroup->clipPathTail = shape;
-      }
+      nsvg__addClipPathShape(p->currentDefGroup, shape);
     }
 }
 
@@ -4475,58 +4534,15 @@ static void nsvg__startElement(void* ud, const char* el, const char** attr)
 	if (strcmp(el, "g") == 0) {
 		nsvg__pushAttr(p);
 		nsvg__parseAttribs(p, attr);
-		NSVGattrib* attrib = nsvg__getAttr(p);
 		if((p->defsFlag & NSVG_DEFFLAGS_ELEMENT) || (p->defsFlag & NSVG_DEFFLAGS_GROUP))
         {
-		  if(p->currentDefGroup == NULL)
-          {
-		    p->defsFlag |= NSVG_DEFFLAGS_GROUP;
-		    p->currentDefGroup = (NSVGgroup*)malloc(sizeof(NSVGgroup));
-            memset(p->currentDefGroup, 0, sizeof(NSVGgroup));
-            memcpy(&p->currentDefGroup->nsvgAttrib, attrib, sizeof(NSVGattrib));
-		    memcpy(&p->currentDefGroup->accumulateXform, &p->groups[p->groupHead].accumulateXform, sizeof(float)*6);
-            nsvg__xformPremultiply(p->currentDefGroup->accumulateXform, attrib->xform);
-            if(p->defsFlag & NSVG_DEFFLAGS_SVG)
-            {
-              p->currentDefGroup->clipPathList = attrib->clippingShape;
-            }
-
-            if (p->defGroup == NULL)
-            {
-              p->defGroup = p->currentDefGroup;
-              p->defGroupTail = p->currentDefGroup;
-            }
-            else
-            {
-              p->defGroupTail->defListnext = p->currentDefGroup;
-              p->defGroupTail = p->currentDefGroup;
-            }
-          }
-		  else
-          {
-		    NSVGgroup* group = (NSVGgroup*)malloc(sizeof(NSVGgroup));
-            memset(group, 0, sizeof(NSVGgroup));
-            memcpy(&group->nsvgAttrib, attrib, sizeof(NSVGattrib));
-		    memcpy(&group->accumulateXform, &p->currentDefGroup->accumulateXform, sizeof(float)*6);
-            nsvg__xformPremultiply(group->accumulateXform, attrib->xform);
-            if (p->currentDefGroup->subgroup == NULL)
-            {
-              p->currentDefGroup->subgroup = group;
-              p->currentDefGroup->grouptail = group;
-            }
-            else
-            {
-              p->currentDefGroup->grouptail->nextGroup = group;
-              p->currentDefGroup->grouptail = group;
-            }
-            group->previousGroup = p->currentDefGroup;
-            p->currentDefGroup = group;
-          }
+          nsvg__addDefGroup(p);
 		}
 		else
         {
           nsvg__pushGroup(p);
           NSVGgroup* group = nsvg__getGroup(p);
+          NSVGattrib* attrib = nsvg__getAttr(p);
           nsvg__xformPremultiply(group->accumulateXform, attrib->xform);
 		}
 	}
@@ -4761,6 +4777,10 @@ static void nsvg__endElement(void* ud, const char* el)
 		p->textFlag = 0;
 		p->textSpanFlag = 0;
 		nsvg__popAttr(p);
+		if(p->currentDefGroup)
+        {
+          p->currentDefGroup = p->currentDefGroup->previousGroup;
+        }
 	} else if (strcmp(el, "symbol") == 0)
 	{
 //	    NSVGSymbol* symbol = &p->attribDataTail->symbol;
@@ -4771,6 +4791,20 @@ static void nsvg__endElement(void* ud, const char* el)
 		p->symbolFlag = 0;
 		nsvg__popAttr(p);
 	}
+}
+
+void nsvgKeepClipPathsInside(NSVGparser* p)
+{
+  NSVGshape* clipPathShape = p->clipPathList->clipListNext;
+  while(clipPathShape)
+  {
+    clipPathShape->bounds[0] = nsvg__maxf(clipPathShape->bounds[0], p->clipPathList->bounds[0]);
+    clipPathShape->bounds[1] = nsvg__maxf(clipPathShape->bounds[1], p->clipPathList->bounds[1]);
+    clipPathShape->bounds[2] = nsvg__minf(clipPathShape->bounds[2], p->clipPathList->bounds[2]);
+    clipPathShape->bounds[3] = nsvg__minf(clipPathShape->bounds[3], p->clipPathList->bounds[3]);
+
+    clipPathShape = clipPathShape->clipListNext;
+  }
 }
 
 NSVGimage* nsvgParse(char* input, const char* units, float dpi)
@@ -4790,6 +4824,7 @@ NSVGimage* nsvgParse(char* input, const char* units, float dpi)
     ret = (NSVGimage*)malloc(sizeof(NSVGimage));
 	memcpy(ret, &p->svgImages[0], sizeof(NSVGimage));
 	ret->shapes = p->shapes;
+	nsvgKeepClipPathsInside(p);
     ret->clipPathList = p->clipPathList;
 
 	p->image = NULL;
