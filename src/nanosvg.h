@@ -1909,7 +1909,14 @@ static void nsvg__addPath(NSVGparser* p, char closed)
 		return;
 
 	if (closed)
-		nsvg__lineTo(p, p->pts[0], p->pts[1]);
+    {
+        float x = p->pts[(p->npts-1)*2];
+        float y = p->pts[(p->npts-1)*2+1];
+	    if (x != p->pts[0] || y != p->pts[1])
+	    {
+            nsvg__lineTo(p, p->pts[0], p->pts[1]);
+		}
+    }
 
 	path = (NSVGpath*)malloc(sizeof(NSVGpath));
 	if (path == NULL) goto error;
