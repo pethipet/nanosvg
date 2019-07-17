@@ -171,6 +171,8 @@ typedef struct NSVGshape
 	char text[256];
 	char fontName[256];
 	float fontSize;
+	float fontGlyphStretch;
+	bool applyGlyphStretch;
 	float textAngle;
 	char textAnchor;
 	NSVGpath* paths;			// Linked list of paths in the image.
@@ -1378,6 +1380,24 @@ static float nsvg__getAverageScale(float* s, float* t)
 	return (sx + sy) * 0.5f;
 }
 
+static float nsvg__getYScale(float* s, float* t)
+{
+    float xform[6];
+    memcpy(xform, s, sizeof(float)*6);
+    nsvg__xformPremultiply(xform, t);
+	float sy = sqrtf(xform[1]*xform[1] + xform[3]*xform[3]);
+	return sy;
+}
+
+static float nsvg__getXScale(float* s, float* t)
+{
+    float xform[6];
+    memcpy(xform, s, sizeof(float)*6);
+    nsvg__xformPremultiply(xform, t);
+	float sx = sqrtf(xform[0]*xform[0] + xform[2]*xform[2]);
+	return sx;
+}
+
 static void nsvg__getLocalBounds(float* bounds, NSVGshape *shape, float* xform)
 {
 	NSVGpath* path;
@@ -1701,6 +1721,7 @@ static NSVGshape* nsvg__addShape(NSVGparser* p)
 	NSVGshape* shape = NULL;
 	NSVGpath* path;
 	int i;
+	float xScale, yScale;
 
 	if (p->plist == NULL && p->textSpanFlag == 0)
 		return shape;
@@ -1722,7 +1743,16 @@ static NSVGshape* nsvg__addShape(NSVGparser* p)
 	shape->miterLimit = attr->miterLimit;
 	shape->fillRule = attr->fillRule;
 	shape->opacity = attr->opacity;
-	shape->fontSize = attr->fontSize * scale;
+	yScale = nsvg__getYScale(group->accumulateXform, attr->xform);
+	xScale = nsvg__getXScale(group->accumulateXform, attr->xform);
+	shape->fontSize = attr->fontSize * yScale;
+	shape->fontGlyphStretch = 1.0f;
+	shape->applyGlyphStretch = false;
+	if(xScale != yScale)
+    {
+	  shape->applyGlyphStretch = true;
+      shape->fontGlyphStretch = xScale/yScale;
+    }
 	shape->preserveSpace = attr->preserveSpace;
 	memcpy(shape->deltaTextLocation, attr->deltaTextLocation, sizeof(float)*2);
 	strcpy(shape->fontName, attr->fontName);
