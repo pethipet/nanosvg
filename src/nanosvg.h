@@ -178,6 +178,7 @@ typedef struct NSVGshape
 	NSVGpath* paths;			// Linked list of paths in the image.
 	char* imageData;
     NSVGshape* clippingPath;
+    struct NSVGshape* tspanSpread;
     struct NSVGshape* tspans;
     struct NSVGshape* tspansTail;
 	struct NSVGshape* next;		// Pointer to next shape, or NULL if last element.
@@ -251,6 +252,10 @@ void nsvgDeleteShape(NSVGshape* shape);
 
 #ifdef NANOSVG_IMPLEMENTATION
 
+#include <map>
+#include <regex>
+#include <string>
+
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
@@ -300,6 +305,26 @@ static int nsvg__isnum(char c)
 	return strchr("0123456789+-.eE", c) != 0;
 }
 
+static void ConvertSpecialCharacters(char* str)
+{
+  static std::map<std::string, std::string> specialCharacters{
+      {"&amp;", "&"},
+      {"&apos;", "'"},
+      {"&quot;", "\""},
+      {"&lt;", "<"},
+      {"&gt;", ">"},
+  };
+
+  std::string text = str;
+
+  for (auto& specialCharacter : specialCharacters)
+  {
+    text = std::regex_replace(text, std::regex(specialCharacter.first), specialCharacter.second);
+  }
+
+  strcpy(str, text.c_str());
+}
+
 static NSVG_INLINE float nsvg__minf(float a, float b) { return a < b ? a : b; }
 static NSVG_INLINE float nsvg__maxf(float a, float b) { return a > b ? a : b; }
 
@@ -309,6 +334,7 @@ static NSVG_INLINE float nsvg__maxf(float a, float b) { return a > b ? a : b; }
 #define NSVG_XML_TAG 1
 #define NSVG_XML_CONTENT 2
 #define NSVG_XML_MAX_ATTRIBS 256
+#define NSVG_XML_MAX_XY 256
 
 static void nsvg__parseContent(char* s,
 							   void (*contentCb)(void* ud, const char* s),
@@ -517,6 +543,10 @@ typedef struct NSVGattrib
 	float miterLimit;
 	char fillRule;
 	char preserveSpace;
+	int numXvalues;
+	float tspanXvalues[NSVG_XML_MAX_XY];
+	int numYvalues;
+	float tspanYvalues[NSVG_XML_MAX_XY];
 	float textLocation[2];
 	float deltaTextLocation[2];
 	float fontSize;
@@ -1759,6 +1789,7 @@ static NSVGshape* nsvg__addShape(NSVGparser* p)
 	strcpy(shape->text, attr->text);
 	shape->textAnchor = attr->textAnchor;
 	shape->textAngle = attr->textAngle - attr->glyphRotation;
+	shape->tspanSpread = NULL;
 	shape->tspans = NULL;
 	shape->tspansTail = NULL;
 	shape->imageData = NULL;
@@ -1890,7 +1921,7 @@ static NSVGshape* nsvg__addShape(NSVGparser* p)
         group->shapes = shape;
         group->shapesTail = shape;
       }
-      else
+      else if(p->textSpanFlag == 0)
       {
         group->shapesTail->groupNext = shape;
         group->shapesTail = shape;
@@ -3440,12 +3471,41 @@ static void nsvg__parseTextAngle(NSVGparser* p, float x, float y)
     attr->textAngle = nsvg__computeAngle(points2[0]-points[0], points2[1]-points[1]);
 }
 
+static void nsvg__parseTspanValues(NSVGparser* p, const char* str, float* tspanValues, int& numValues)
+{
+	const char* start;
+	char value[128];
+	int n = 0;
+
+	while (*str)
+	{
+		// Left Trim
+		while(*str && nsvg__isspace(*str)) str++;
+		start = str;
+		while(*str && !nsvg__isspace(*str)) str++;
+
+        n = (int)(str - start);
+        if (n)
+          memcpy(value, start, n);
+        value[n] = 0;
+		tspanValues[numValues++] = nsvg__parseCoordinate(p, value, nsvg__actualOrigX(p), nsvg__actualWidth(p));
+		if (*str)
+		  str++;
+	}
+}
+
 static void nsvg__parseText(NSVGparser* p, const char** attr)
 {
     NSVGattrib* attrib = nsvg__getAttr(p);
+    attrib->numXvalues = 0;
+    memset(attrib->tspanXvalues, 0, sizeof(float)*NSVG_XML_MAX_XY);
+    attrib->numYvalues = 0;
+    memset(attrib->tspanYvalues, 0, sizeof(float)*NSVG_XML_MAX_XY);
     bool coordinateFound = false;
 	float x = attrib->textLocation[0];
 	float y = attrib->textLocation[1];
+	attrib->tspanXvalues[0] = attrib->textLocation[0];
+	attrib->tspanYvalues[0] = attrib->textLocation[1];
 	float dx = 0.0f;
 	float dy = 0.0f;
 	float angle = 0.0f;
@@ -3457,8 +3517,12 @@ static void nsvg__parseText(NSVGparser* p, const char** attr)
 		{
 			if (strcmp(attr[i], "x") == 0)
             {
-                x = nsvg__parseCoordinate(p, attr[i+1], nsvg__actualOrigX(p), nsvg__actualWidth(p));
+			    nsvg__parseTspanValues(p, attr[i+1], attrib->tspanXvalues, attrib->numXvalues);
                 coordinateFound = true;
+                if(attrib->numXvalues == 1)
+                {
+                  x = attrib->tspanXvalues[0];
+                }
             }
 			else if (strcmp(attr[i], "dx") == 0)
             {
@@ -3466,8 +3530,20 @@ static void nsvg__parseText(NSVGparser* p, const char** attr)
             }
 			else if (strcmp(attr[i], "y") == 0)
             {
-                y = nsvg__parseCoordinate(p, attr[i+1], nsvg__actualOrigY(p), nsvg__actualHeight(p));
+			    nsvg__parseTspanValues(p, attr[i+1], attrib->tspanYvalues, attrib->numYvalues);
                 coordinateFound = true;
+                if(attrib->numYvalues == 1)
+                {
+                  y = attrib->tspanYvalues[0];
+                }
+
+                if(attrib->numXvalues > 1)
+                {
+                  for(int i=0;i<attrib->numXvalues;i++)
+                  {
+                    attrib->tspanYvalues[i] = attrib->tspanYvalues[0];
+                  }
+                }
             }
 			else if (strcmp(attr[i], "dy") == 0)
             {
@@ -3484,6 +3560,11 @@ static void nsvg__parseText(NSVGparser* p, const char** attr)
 		}
 	}
 
+    if(attrib->numXvalues == 0)
+    {
+        attrib->numXvalues++;
+    }
+
 	attrib->deltaTextLocation[0] = dx;
     attrib->deltaTextLocation[1] = dy;
     attrib->glyphRotation = angle;
@@ -3494,17 +3575,38 @@ static void nsvg__parseText(NSVGparser* p, const char** attr)
       attrib->textLocation[1] = y;
     }
 
-	nsvg__resetPath(p);
-	if(coordinateFound || p->textSpanFlag == 0 ||
-	    (p->defsFlag == NSVG_DEFFLAGS_NONE && strlen(p->shapesTail->text) == 0 &&
-	    (!p->shapesTail->tspans || strlen(p->shapesTail->tspansTail->text) == 0)))
+	int previoustextSpanFlag = p->textSpanFlag;
+	//if we are not parsing a tspan but we have multiple x values then treat as a tspan
+	if(p->textSpanFlag == 0 && attrib->numXvalues > 1)
     {
-      nsvg__addPoint(p, x, y);
-      nsvg__addTextPath(p);
-      nsvg__parseTextAngle(p, x, y);
+	    //add a new shape for the tspan to live on
+        nsvg__resetPath(p);
+        nsvg__addPoint(p, 0, 0);
+        nsvg__addTextPath(p);
+        nsvg__addShape(p);
+        p->textSpanFlag = 1;
     }
 
-    nsvg__addShape(p);
+	for(int i=0;i<attrib->numXvalues;i++)
+	{
+        nsvg__resetPath(p);
+        if(coordinateFound || p->textSpanFlag == 0 ||
+            (p->defsFlag == NSVG_DEFFLAGS_NONE && strlen(p->shapesTail->text) == 0 &&
+            (!p->shapesTail->tspans || strlen(p->shapesTail->tspansTail->text) == 0)))
+        {
+          nsvg__addPoint(p, attrib->tspanXvalues[i], attrib->tspanYvalues[i]);
+          nsvg__addTextPath(p);
+          nsvg__parseTextAngle(p, attrib->tspanXvalues[i], attrib->tspanYvalues[i]);
+        }
+
+        nsvg__addShape(p);
+        if(i == 0 && attrib->numXvalues > 1)
+        {
+          p->shapesTail->tspanSpread = p->shapesTail->tspansTail;
+        }
+	}
+
+	p->textSpanFlag = previoustextSpanFlag;
 }
 
 static char *nsvg__strndup(const char *s, size_t n)
@@ -3683,6 +3785,7 @@ static void nsvg__parseImage(NSVGparser* p, const char** attr)
     alignment.alignX = NSVG_ALIGN_MID;
     alignment.alignY = NSVG_ALIGN_MID;
 	char* imageData = NULL;
+	memset(&viewbox, 0, sizeof(NSVGViewbox));
 
 	for (i = 0; attr[i]; i += 2)
 	{
@@ -4674,6 +4777,8 @@ static void nsvg__content(void* ud, const char* s)
       if (n) memcpy(text, s, n);
       text[n] = 0;
 
+      ConvertSpecialCharacters(text);
+
 	  if(p->currentDefGroup)
       {
           if(p->currentDefGroup->attribDataTail->tspans == NULL)
@@ -4704,7 +4809,28 @@ static void nsvg__content(void* ud, const char* s)
         }
         else
         {
-          strcpy(p->image->shapesTail->tspansTail->text, text);
+          if(p->image->shapesTail->tspanSpread)
+          {
+            int i = 0;
+            while(p->image->shapesTail->tspanSpread)
+            {
+              p->image->shapesTail->tspanSpread->text[0] = text[i++];
+              if((unsigned char)text[i-1] > 128)
+              {
+                p->image->shapesTail->tspanSpread->text[1] = text[i++];
+                p->image->shapesTail->tspanSpread->text[2] = 0;
+              }
+              else
+              {
+                p->image->shapesTail->tspanSpread->text[1] = 0;
+              }
+              p->image->shapesTail->tspanSpread = p->image->shapesTail->tspanSpread->next;
+            }
+          }
+          else
+          {
+            strcpy(p->image->shapesTail->tspansTail->text, text);
+          }
         }
 	  }
 	}
