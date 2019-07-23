@@ -2925,7 +2925,7 @@ static void nsvg__parseStyle(NSVGparser* p, const char* str)
           NSVGstyles* style = p->styles;
           while (style)
           {
-              if (strncmp(style->name, start+1, end-start-1) == 0)
+              if (strlen(style->name) == static_cast<size_t>(end-start-1) && strncmp(style->name, start+1, end-start-1) == 0)
               {
                   break;
               }
@@ -4890,10 +4890,15 @@ static void nsvg__content(void* ud, const char* s)
             while(p->image->shapesTail->tspanSpread)
             {
               p->image->shapesTail->tspanSpread->text[0] = text[i++];
-              if((unsigned char)text[i-1] > 128)
+              if((unsigned char)text[i-1] >= 128)
               {
                 p->image->shapesTail->tspanSpread->text[1] = text[i++];
                 p->image->shapesTail->tspanSpread->text[2] = 0;
+                if((unsigned char)text[i-1] >= 128 && (unsigned char)text[i] > 128)
+                {
+                  p->image->shapesTail->tspanSpread->text[2] = text[i++];
+                  p->image->shapesTail->tspanSpread->text[3] = 0;
+                }
               }
               else
               {
