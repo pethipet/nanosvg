@@ -195,6 +195,9 @@ typedef struct NSVGAlignMent
 
 typedef struct NSVGViewbox
 {
+  NSVGViewbox() : viewMinx(0), viewMiny(0), viewWidth(0), viewHeight(0)
+  {}
+
   float viewMinx, viewMiny, viewWidth, viewHeight;
 } NSVGViewbox;
 
@@ -227,9 +230,11 @@ typedef struct NSVGSymbol
 // Parses SVG file from a file, returns SVG image as paths.
 NSVGimage* nsvgParseFromFile(const char* filename, const char* units, float dpi);
 
+NSVGimage* nsvgParseFromFileWithCSS(const char* filename, const char* styleCSS, const char* units, float dpi);
+
 // Parses SVG file from a null terminated string, returns SVG image as paths.
 // Important note: changes the string.
-NSVGimage* nsvgParse(char* input, const char* units, float dpi);
+NSVGimage* nsvgParse(char* input, const char* styleCSS, const char* units, float dpi);
 
 // Duplicates a path.
 NSVGshape* nsvgDuplicateShape(NSVGshape* shape);
@@ -360,6 +365,7 @@ static void nsvg__parseContent(char* s,
 static void nsvg__parseElement(char* s,
 							   void (*startelCb)(void* ud, const char* el, const char** attr),
 							   void (*endelCb)(void* ud, const char* el),
+							   void (*parseEntityStyle)(void* ud, const char* el),
 							   void* ud)
 {
 	const char* attr[NSVG_XML_MAX_ATTRIBS];
@@ -379,6 +385,12 @@ static void nsvg__parseElement(char* s,
 	} else {
 		start = 1;
 	}
+
+	if (strncmp(s, "!ENTITY", 7) == 0)
+    {
+       (*parseEntityStyle)(ud, s+7);
+       return;
+    }
 
 	// Skip comments, data and preprocessor stuff.
 	if (!*s || *s == '?' || *s == '!')
@@ -437,26 +449,41 @@ int nsvg__parseXML(char* input,
 				   void (*startelCb)(void* ud, const char* el, const char** attr),
 				   void (*endelCb)(void* ud, const char* el),
 				   void (*contentCb)(void* ud, const char* s),
+				   void (*parseEntityStyle)(void* ud, const char* s),
 				   void* ud)
 {
 	char* s = input;
 	char* mark = s;
 	int state = NSVG_XML_CONTENT;
-	while (*s) {
+	while (*s)
+	{
 		if (*s == '<' && state == NSVG_XML_CONTENT) {
 			// Start of a tag
 			*s++ = '\0';
 			nsvg__parseContent(mark, contentCb, ud);
 			mark = s;
 			state = NSVG_XML_TAG;
-		} else if (*s == '>' && state == NSVG_XML_TAG)
+		}
+		else if (*s == '>' && state == NSVG_XML_TAG)
 		{
 			// Start of a content or new tag.
 			*s++ = '\0';
-			nsvg__parseElement(mark, startelCb, endelCb, ud);
+			nsvg__parseElement(mark, startelCb, endelCb, parseEntityStyle, ud);
 			mark = s;
 			state = NSVG_XML_CONTENT;
-		} else {
+		}
+		else if (*s == '[' && state == NSVG_XML_TAG)
+		{
+          mark = ++s;
+		  while(*s && *s != ']')
+          {
+            s++;
+          }
+          *s++ = '\0';
+          nsvg__parseXML(mark, startelCb, endelCb, contentCb, parseEntityStyle, ud);
+        }
+		else
+        {
 			s++;
 		}
 	}
@@ -635,6 +662,7 @@ typedef struct NSVGparser
 	char clipPathFlag;
 	char defsFlag;
 	char styleFlag;
+	char entityStyleFlag;
 	char useFlag;
 	char symbolFlag;
 	char textFlag;
@@ -2694,8 +2722,9 @@ static int nsvg__parseAttr(NSVGparser* p, const char* name, const char* value)
 	NSVGattrib* attr = nsvg__getAttr(p);
 	if (!attr) return 0;
 
-	if (strcmp(name, "style") == 0) {
-		nsvg__parseStyle(p, value);
+	if (strcmp(name, "style") == 0)
+	{
+        nsvg__parseStyle(p, value);
 	} else if (strcmp(name, "display") == 0) {
 		if (strcmp(value, "none") == 0)
 			attr->visible = 0;
@@ -2876,10 +2905,11 @@ static int nsvg__parseNameValue(NSVGparser* p, const char* start, const char* en
 
 static void nsvg__parseStyle(NSVGparser* p, const char* str)
 {
-	const char* start;
+    const char* start;
 	const char* end;
 
-	while (*str) {
+	while (*str)
+	{
 		// Left Trim
 		while(*str && nsvg__isspace(*str)) ++str;
 		start = str;
@@ -2890,10 +2920,72 @@ static void nsvg__parseStyle(NSVGparser* p, const char* str)
 		while (end > start &&  (*end == ';' || nsvg__isspace(*end))) --end;
 		++end;
 
+        if(start[0] == '&')
+        {
+          NSVGstyles* style = p->styles;
+          while (style)
+          {
+              if (strncmp(style->name, start+1, end-start-1) == 0)
+              {
+                  break;
+              }
+              style = style->next;
+          }
+
+          if (style)
+          {
+              nsvg__parseStyle(p, style->description);
+              return;
+          }
+        }
+
 		nsvg__parseNameValue(p, start, end);
 		if (*str) ++str;
 	}
 }
+
+static char *nsvg__strndup(const char *s, size_t n)
+{
+	char *result;
+	size_t len = strlen(s);
+
+	if (n < len)
+		len = n;
+
+	result = (char *)malloc(len + 1);
+	if (!result)
+		return 0;
+
+	result[len] = '\0';
+	return (char *)memcpy(result, s, len);
+}
+
+static void nsvg__parseEntityStyle(void* ud, const char* str)
+{
+	NSVGparser* p = (NSVGparser*)ud;
+	const char* start;
+	const char* end;
+
+    // Left Trim
+    while(*str && nsvg__isspace(*str)) ++str;
+    start = str;
+    while(*str && *str != '\"') str++;
+    end = str-1;
+
+    // Right Trim
+    while (end > start && nsvg__isspace(*end)) end--;
+
+    NSVGstyles* next = p->styles;
+
+    p->styles = (NSVGstyles*)malloc(sizeof(NSVGstyles));
+    p->styles->next = next;
+    p->styles->name = nsvg__strndup(start, (size_t)(end - start + 1));
+
+    start = ++str;
+    while(*str && *str != '\"') str++;
+    p->styles->description = nsvg__strndup(start, (size_t)(str - start));
+}
+
 
 static void nsvg__parseAttribs(NSVGparser* p, const char** attr)
 {
@@ -3609,22 +3701,6 @@ static void nsvg__parseText(NSVGparser* p, const char** attr)
 	p->textSpanFlag = previoustextSpanFlag;
 }
 
-static char *nsvg__strndup(const char *s, size_t n)
-{
-	char *result;
-	size_t len = strlen(s);
-
-	if (n < len)
-		len = n;
-
-	result = (char *)malloc(len + 1);
-	if (!result)
-		return 0;
-
-	result[len] = '\0';
-	return (char *)memcpy(result, s, len);
-}
-
 static void nsvg__fitImageToViewbox(NSVGshape* shape, NSVGViewbox viewbox, NSVGAlignMent alignment)
 {
 	NSVGpath* path;
@@ -3785,7 +3861,6 @@ static void nsvg__parseImage(NSVGparser* p, const char** attr)
     alignment.alignX = NSVG_ALIGN_MID;
     alignment.alignY = NSVG_ALIGN_MID;
 	char* imageData = NULL;
-	memset(&viewbox, 0, sizeof(NSVGViewbox));
 
 	for (i = 0; attr[i]; i += 2)
 	{
@@ -4897,6 +4972,45 @@ static void nsvg__content(void* ud, const char* s)
 	// empty
 }
 
+static void nsvg__parseCSS(void* ud, const char* s)
+{
+	NSVGparser* p = (NSVGparser*)ud;
+    int state = 0;
+    const char* start = NULL;
+    while (*s)
+    {
+        char c = *s;
+        if (nsvg__isspace(c) || c == '{')
+        {
+            if (state == 1)
+            {
+                NSVGstyles* next = p->styles;
+
+                p->styles = (NSVGstyles*)malloc(sizeof(NSVGstyles));
+                p->styles->next = next;
+                p->styles->name = nsvg__strndup(start, (size_t)(s - start));
+                start = s + 1;
+                while(nsvg__isspace(*start) || *start == '{')
+                {
+                    start++;
+                }
+                state = 2;
+            }
+        }
+        else if (state == 2 && c == '}')
+        {
+            p->styles->description = nsvg__strndup(start, (size_t)(s - start));
+            state = 0;
+        }
+        else if (state == 0)
+        {
+            start = s;
+            state = 1;
+        }
+        s++;
+    }
+}
+
 static void nsvg__endElement(void* ud, const char* el)
 {
 	NSVGparser* p = (NSVGparser*)ud;
@@ -4970,7 +5084,7 @@ void nsvgKeepClipPathsInside(NSVGparser* p)
   }
 }
 
-NSVGimage* nsvgParse(char* input, const char* units, float dpi)
+NSVGimage* nsvgParse(char* input, const char* styleCSS, const char* units, float dpi)
 {
 	NSVGparser* p;
 	NSVGimage* ret = 0;
@@ -4982,7 +5096,8 @@ NSVGimage* nsvgParse(char* input, const char* units, float dpi)
 	p->dpi = dpi;
 	p->units = units;
 
-	nsvg__parseXML(input, nsvg__startElement, nsvg__endElement, nsvg__content, p);
+	nsvg__parseCSS(p, styleCSS);
+	nsvg__parseXML(input, nsvg__startElement, nsvg__endElement, nsvg__content, nsvg__parseEntityStyle, p);
 
     ret = (NSVGimage*)malloc(sizeof(NSVGimage));
 	memcpy(ret, &p->svgImages[0], sizeof(NSVGimage));
@@ -4997,7 +5112,7 @@ NSVGimage* nsvgParse(char* input, const char* units, float dpi)
 	return ret;
 }
 
-NSVGimage* nsvgParseFromFile(const char* filename, const char* units, float dpi)
+NSVGimage* nsvgParseFromFileWithCSS(const char* filename, const char* styleCSS, const char* units, float dpi)
 {
 	FILE* fp = NULL;
 	size_t size;
@@ -5014,7 +5129,7 @@ NSVGimage* nsvgParseFromFile(const char* filename, const char* units, float dpi)
 	if (fread(data, 1, size, fp) != size) goto error;
 	data[size] = '\0';	// Must be null terminated.
 	fclose(fp);
-	image = nsvgParse(data, units, dpi);
+	image = nsvgParse(data, styleCSS, units, dpi);
 	free(data);
 
 	return image;
@@ -5024,6 +5139,11 @@ error:
 	if (data) free(data);
 	if (image) nsvgDelete(image);
 	return NULL;
+}
+
+NSVGimage* nsvgParseFromFile(const char* filename, const char* units, float dpi)
+{
+  return nsvgParseFromFileWithCSS(filename, "", units, dpi);
 }
 
 NSVGpath* nsvgDuplicatePath(NSVGpath* p)
